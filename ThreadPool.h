@@ -66,6 +66,7 @@ public:
     void addTask(Task *t);//向线程池添加任务
     void manage();//管理线程池，任务数量多就增加线程，少就减少线程
     void work();
+    void exit();
 
 private:
     int maxThreadNum;

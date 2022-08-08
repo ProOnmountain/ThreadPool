@@ -12,33 +12,12 @@ minThreadNum(minNum), maxThreadNum(maxNum), reduceNum(0), increaseNum(2)
         threadVector.emplace_back(t);
         threadVectorMutex.unlock();
     }
+    thread *t = new thread(&ThreadPool::manage, this);//启用一个管理线程
 }
 
 ThreadPool::~ThreadPool()
 {
-    taskQueueMutex.lock();
-    while (taskQueue.size() > 0)
-    {
-        taskQueueMutex.unlock();
-        threadCon.notify_all();
-        sleep(2);
-    }
-    taskQueueMutex.unlock();
-
-    threadVectorMutex.lock();
-    for (auto t : threadVector)
-    {
-        if(t->joinable())
-        {
-            t->join();
-        }
-    }
-    threadVectorMutex.unlock();
-
-    for(auto t : threadVector)
-    {
-        delete t;
-    }
+    exit();
 }
 
 void ThreadPool::addTask(Task *t)
@@ -52,34 +31,47 @@ void ThreadPool::addTask(Task *t)
     taskQueueMutex.lock();
     taskQueue.emplace(t);
     taskQueueMutex.unlock();
-    cout << "add task success" << endl;
+    //cout << "add task success" << endl;
     threadCon.notify_one();
 }
 
 void ThreadPool::work()
-{
-    taskQueueMutex.lock();
+{  
     while(1)
     {
+        taskQueueMutex.lock();
         if (!taskQueue.empty())//如果task队列有task就取一个执行
         {
             Task topTask(*(taskQueue.front()));
             taskQueue.pop();
             taskQueueMutex.unlock();
             topTask();
+            cout << "thread id: " << this_thread::get_id() << "work" << endl;
         }
         else//没有任务就阻塞当前线程
         {
-            cout << "thread id: "<< this_thread::get_id() <<" block, task queue is empty" << endl;
+            //cout << "thread id: "<< this_thread::get_id() <<" block, task queue is empty" << endl;
             taskQueueMutex.unlock();//先将任务队列解锁
             unique_lock<mutex> threadLock(threadMutex);
             threadCon.wait(threadLock);
 
-            reduceNumMutex.lock();
+            reduceNumMutex.lock();//如果线程减少标志大于0，就让当前线程自动结束
             if(reduceNum > 0)
             {
                 --reduceNum;
                 reduceNumMutex.unlock();
+                threadVectorMutex.lock();
+                for (auto it = threadVector.begin(); it != threadVector.end(); ++it)
+                {
+                    if((*it)->get_id() == this_thread::get_id())
+                    {
+                        threadVector.erase(it);
+                        threadVectorMutex.unlock();
+                        break;
+                    }
+                }
+                cout << "reduce one thread" << endl;
+                threadVectorMutex.unlock();
                 break;
             } 
             reduceNumMutex.unlock();
@@ -89,12 +81,13 @@ void ThreadPool::work()
 
 void ThreadPool::manage()
 {
+    cout << "start manage" << endl;
     while(1)
     {
-        sleep(2);//每2秒检测一次
+        sleep(4); //每4秒检测一次
         threadVectorMutex.lock();
         int threadNum = threadVector.size();
-        threadMutex.unlock();
+        threadVectorMutex.unlock();
 
         taskQueueMutex.lock();
         int taskNum = taskQueue.size();
@@ -106,10 +99,11 @@ void ThreadPool::manage()
             for (int i = 0; i < increaseNum; ++i)
             {
                 thread *t = new thread(&ThreadPool::work, this);
-                t->detach();
+                //t->detach();
                 threadVectorMutex.lock();
                 threadVector.emplace_back(t);
                 threadVectorMutex.unlock();
+                cout << "add one thread" << endl;
             }
         }
 
@@ -121,5 +115,43 @@ void ThreadPool::manage()
             reduceNumMutex.unlock();
             threadCon.notify_all();
         }
+
+        taskQueueMutex.lock();
+        if(taskQueue.empty())
+        {
+            taskQueueMutex.unlock();
+            exit();
+            break;
+        }
+        taskQueueMutex.unlock();
     }
+    cout << "stop manage" << endl;
 }
+
+ void ThreadPool::exit()
+ {
+    taskQueueMutex.lock();
+    while (taskQueue.size() > 0)
+    {
+        taskQueueMutex.unlock();
+        threadCon.notify_all();
+        sleep(2);
+    }
+    taskQueueMutex.unlock();
+
+    threadVectorMutex.lock();
+    if(!threadVector.empty())
+    {
+        for (auto t : threadVector)
+        {
+            if(t->joinable())
+            {
+                t->join();
+            }
+            delete t;
+        }
+        threadVector.clear();
+    }
+    threadVectorMutex.unlock();
+    //cout << "pool exit" << endl;
+ }
