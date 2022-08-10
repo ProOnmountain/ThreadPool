@@ -3,7 +3,7 @@
 #include<unistd.h>
 
 ThreadPool::ThreadPool(int minNum, int maxNum):
-minThreadNum(minNum), maxThreadNum(maxNum), reduceNum(0), increaseNum(2)
+minThreadNum(minNum), maxThreadNum(maxNum), reduceNum(0), increaseNum(2), exitFlag(0)
 {
     for (int i = 0; i < minThreadNum; ++i)
     {
@@ -46,7 +46,7 @@ void ThreadPool::work()
             taskQueue.pop();
             taskQueueMutex.unlock();
             topTask();
-            cout << "thread id: " << this_thread::get_id() << "work" << endl;
+            //cout << "thread id: " << this_thread::get_id() << " work" << endl;
         }
         else//没有任务就阻塞当前线程
         {
@@ -54,9 +54,9 @@ void ThreadPool::work()
             taskQueueMutex.unlock();//先将任务队列解锁
             unique_lock<mutex> threadLock(threadMutex);
             threadCon.wait(threadLock);
-
-            reduceNumMutex.lock();//如果线程减少标志大于0，就让当前线程自动结束
-            if(reduceNum > 0)
+            reduceNumMutex.lock(); //如果线程减少标志大于0，就让当前线程自动结束
+            //cout << "reduce num: " << reduceNum << endl;
+            if (reduceNum > 0)
             {
                 --reduceNum;
                 reduceNumMutex.unlock();
@@ -66,11 +66,10 @@ void ThreadPool::work()
                     if((*it)->get_id() == this_thread::get_id())
                     {
                         threadVector.erase(it);
-                        threadVectorMutex.unlock();
                         break;
                     }
                 }
-                cout << "reduce one thread" << endl;
+                //cout << "reduce one thread, thread size: " << threadVector.size() << endl;
                 threadVectorMutex.unlock();
                 break;
             } 
@@ -84,7 +83,14 @@ void ThreadPool::manage()
     cout << "start manage" << endl;
     while(1)
     {
-        sleep(4); //每4秒检测一次
+        exitFlagMutex.lock();
+        if(exitFlag == -1)//exit调用成功，直接退出manage
+        {
+            exitFlagMutex.unlock();
+            break;
+        }
+        exitFlagMutex.unlock();
+        sleep(3); //每4秒检测一次
         threadVectorMutex.lock();
         int threadNum = threadVector.size();
         threadVectorMutex.unlock();
@@ -102,56 +108,91 @@ void ThreadPool::manage()
                 //t->detach();
                 threadVectorMutex.lock();
                 threadVector.emplace_back(t);
+                //cout << "add one thread, thread num: " <<threadVector.size() << endl;
                 threadVectorMutex.unlock();
-                cout << "add one thread" << endl;
+
             }
         }
 
         //任务数量少，减少线程
-        if(threadNum > 2 * taskNum)
+        if(threadNum > 2 * taskNum && threadNum > minThreadNum)
         {
-            reduceNumMutex.lock();
-            reduceNum = 2;
-            reduceNumMutex.unlock();
-            threadCon.notify_all();
+            exitFlagMutex.lock();
+            if(exitFlag != 1)//在没有执行退出程序时才执行下列操作
+            {
+                exitFlagMutex.unlock();
+                reduceNumMutex.lock();
+                reduceNum = 2;
+                exitFlagMutex.unlock();
+                reduceNumMutex.unlock();
+                threadCon.notify_all();
+            }
         }
-
-        taskQueueMutex.lock();
-        if(taskQueue.empty())
-        {
-            taskQueueMutex.unlock();
-            exit();
-            break;
-        }
-        taskQueueMutex.unlock();
+        //cout << "manage running" << endl;
     }
     cout << "stop manage" << endl;
 }
 
  void ThreadPool::exit()
  {
-    taskQueueMutex.lock();
-    while (taskQueue.size() > 0)
-    {
-        taskQueueMutex.unlock();
-        threadCon.notify_all();
-        sleep(2);
+     exitFlagMutex.lock();
+     if (exitFlag == -1)
+     {
+         return;
     }
-    taskQueueMutex.unlock();
-
+    else
+    {
+        exitFlag = 1;
+    }
+    exitFlagMutex.unlock();
+    
+    //任务没执行完
+    while(1)
+    {
+        taskQueueMutex.lock();
+        //cout << "exiting, task size: " << taskQueue.size() << endl;
+        if (taskQueue.size() > 0)
+        {
+            taskQueueMutex.unlock();
+        }
+        else
+        {
+            taskQueueMutex.unlock();
+            break;
+        }
+        sleep(1);//间隔1秒检测一次
+    }
+    
+    //把存活线程都结束
     threadVectorMutex.lock();
     if(!threadVector.empty())
     {
-        for (auto t : threadVector)
+        reduceNumMutex.lock();
+        reduceNum = threadVector.size();
+        threadVectorMutex.unlock();
+        reduceNumMutex.unlock();
+        
+        while(1)
         {
-            if(t->joinable())
+            threadVectorMutex.lock();
+            //cout << "exiting, thread size : " << threadVector.size() << endl;
+            if(threadVector.size() > 0)
             {
-                t->join();
+                threadVectorMutex.unlock();
+                threadCon.notify_one();
             }
-            delete t;
+            else
+            {
+                threadVectorMutex.unlock();
+                break;
+            }
+            sleep(1);
         }
-        threadVector.clear();
     }
     threadVectorMutex.unlock();
-    //cout << "pool exit" << endl;
+    exitFlagMutex.lock();
+    exitFlag = -1;//成功退出
+    exitFlagMutex.unlock();
+    sleep(1);
+    cout << "pool exit" << endl;
  }

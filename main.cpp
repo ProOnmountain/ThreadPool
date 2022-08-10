@@ -5,22 +5,24 @@ using namespace std;
 void func(void *arg)
 {
     int c = *((int *)arg);
+    //sleep(1);
     cout << "output: " << c << endl;
+    
 }
 
 int main()
 {
     ThreadPool pool(2, 10);
-    int *a = new int;
-    *a = 0;
-    for (int i = 0; i < 4; ++i)
+    
+    
+    for (int i = 0; i < 20; ++i)
     {
-        (*a) += i;
+        int *a = new int;
+        (*a) = i;
         Func f = func;
         Task *t = new Task(&f, (void*)a);
         pool.addTask(t);
-        sleep(1);
     }
-    //pool.manage();
+    pool.exit();
     return 0;
 }
